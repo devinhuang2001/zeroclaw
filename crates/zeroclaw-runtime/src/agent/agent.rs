@@ -33,7 +33,7 @@ pub use zeroclaw_api::agent::TurnEvent;
 /// The turn engine's single per-call limits authority. Aliased from the turn
 /// module so the `Agent`, its builder, and `run_tool_call_loop` all thread one
 /// type (see `crate::agent::turn::ContextLimitsResolver`).
-use crate::agent::loop_::ContextLimitsResolver;
+use crate::agent::loop_::{ContextLimitsResolver, autosave_memory_key};
 
 /// Provider handle, its `<type>.<alias>` reference, the resolved model name,
 /// and the route resolver bound to that provider — the four values a session
@@ -1855,11 +1855,12 @@ impl Agent {
         // Memory context is injected once in the engine, keyed on the
         // ingress origin (agent::memory_inject).
         if self.auto_save {
+            let user_key = autosave_memory_key("user_msg");
             let store_start = std::time::Instant::now();
             let store_result = self
                 .memory
                 .store(
-                    "user_msg",
+                    &user_key,
                     user_message,
                     MemoryCategory::Conversation,
                     self.memory_session_id.as_deref(),
@@ -2145,11 +2146,12 @@ impl Agent {
                 // Mirror the enrichment logic from append_streamed_user_message_to_history
                 // but route through the round's messages instead of self.history/new_msgs.
                 if self.auto_save {
+                    let user_key = autosave_memory_key("user_msg");
                     let store_start = std::time::Instant::now();
                     let store_result = self
                         .memory
                         .store(
-                            "user_msg",
+                            &user_key,
                             input.text(),
                             MemoryCategory::Conversation,
                             self.memory_session_id.as_deref(),
@@ -3975,11 +3977,12 @@ impl Agent {
         // Memory context is injected once in the engine, keyed on the
         // ingress origin (agent::memory_inject).
         if self.auto_save {
+            let user_key = autosave_memory_key("user_msg");
             let store_start = std::time::Instant::now();
             let store_result = self
                 .memory
                 .store(
-                    "user_msg",
+                    &user_key,
                     user_message,
                     MemoryCategory::Conversation,
                     self.memory_session_id.as_deref(),

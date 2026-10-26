@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use std::sync::{Arc, Mutex};
 use zeroclaw_api::agent::TurnEvent;
 use zeroclaw_config::schema::{AliasedAgentConfig, MemoryConfig, RiskProfileConfig};
-use zeroclaw_memory::{self, Memory};
+use zeroclaw_memory::{self, Memory, MemoryCategory};
 
 zeroclaw_api::mock_tool_attribution!(CountingTool, EchoTool, FailingTool, PanickingTool);
 use zeroclaw_providers::{
@@ -804,10 +804,11 @@ async fn auto_save_stores_only_user_messages_in_memory() {
         "Expected exactly 1 user memory entry, got {count}"
     );
 
-    let stored = mem.get("user_msg").await.unwrap();
-    assert!(stored.is_some(), "Expected user_msg key to be present");
+    let stored = mem.list(Some(&MemoryCategory::Conversation), None).await.unwrap();
+    assert_eq!(stored.len(), 1, "Expected one auto-saved user message");
+    assert!(stored[0].key.starts_with("user_msg_"));
     assert_eq!(
-        stored.unwrap().content,
+        stored[0].content,
         "Remember this fact",
         "Stored memory should match the original user message"
     );
@@ -817,6 +818,30 @@ async fn auto_save_stores_only_user_messages_in_memory() {
         assistant.is_none(),
         "assistant_resp should not be auto-saved anymore"
     );
+}
+
+#[tokio::test]
+async fn auto_save_preserves_distinct_regular_and_streamed_messages() {
+    let (mem, _tmp) = make_sqlite_memory();
+    let model_provider = Box::new(ScriptedModelProvider::new(vec![
+        text_response("first reply"),
+        text_response("second reply"),
+    ]));
+    let mut agent = build_agent_with_memory(model_provider, vec![], mem.clone(), true);
+
+    agent.turn("first user message").await.unwrap();
+    let (event_tx, _event_rx) = tokio::sync::mpsc::channel::<TurnEvent>(64);
+    agent
+        .turn_streamed("second user message", event_tx, None)
+        .await
+        .unwrap();
+
+    let stored = mem.list(Some(&MemoryCategory::Conversation), None).await.unwrap();
+    assert_eq!(stored.len(), 2, "Both user messages should be retained");
+    assert!(stored.iter().all(|entry| entry.key.starts_with("user_msg_")));
+    assert_ne!(stored[0].key, stored[1].key, "Keys must be unique per message");
+    assert!(stored.iter().any(|entry| entry.content == "first user message"));
+    assert!(stored.iter().any(|entry| entry.content == "second user message"));
 }
 
 #[tokio::test]
