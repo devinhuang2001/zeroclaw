@@ -423,7 +423,7 @@ impl McpServer {
     /// This reads transport-owned atomic connection state and does not acquire
     /// the async server metadata lock.
     pub fn health_check(&self) -> bool {
-        self.transport.health_check()
+        !self.recovery.is_poisoned() && self.transport.health_check()
     }
 
     /// Identity comparison on the underlying transport handle. Two
@@ -2010,6 +2010,18 @@ mod tests {
         async fn close(&self) -> Result<()> {
             bail!("cleanup failed")
         }
+    }
+
+    #[tokio::test]
+    async fn poisoned_recovery_is_reported_as_unhealthy_to_registry() {
+        let transport: Arc<dyn SharedMcpTransportConn> = Arc::new(FakeTransport {
+            result: json!({"ok": true}),
+        });
+        let server = server_with_transport("poisoned", transport, 5);
+        assert!(server.health_check());
+        server.recovery.arm(0);
+        server.recovery.poison();
+        assert!(!server.health_check());
     }
 
     #[tokio::test]
