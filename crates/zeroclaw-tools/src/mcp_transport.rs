@@ -311,6 +311,12 @@ impl McpRequestLifecycle {
         self.phase.store(REQUEST_OUTCOME_UNKNOWN, Ordering::Release);
     }
 
+    /// A connect-stage error proves the server did not receive the request.
+    /// Restore the pre-write classification so the client can safely retry.
+    fn mark_connect_failed(&self) {
+        self.phase.store(REQUEST_PRE_WRITE, Ordering::Release);
+    }
+
     fn mark_completed(&self) {
         self.phase.store(REQUEST_COMPLETED, Ordering::Release);
     }
@@ -1254,10 +1260,13 @@ impl SharedMcpTransportConn for HttpTransport {
         let epoch_guard = lifecycle.begin_write().await;
         req = self.apply_session_header(req);
         lifecycle.mark_outcome_unknown(epoch_guard.epoch());
-        let resp = req
-            .send()
-            .await
-            .context("HTTP request to MCP server failed")?;
+        let resp = req.send().await.map_err(|error| {
+            if error.is_connect() {
+                lifecycle.mark_connect_failed();
+                return McpTransportError::TransportClosed.into();
+            }
+            anyhow::Error::new(error).context("HTTP request to MCP server failed")
+        })?;
         drop(epoch_guard);
 
         if !resp.status().is_success() {
@@ -2028,7 +2037,13 @@ impl SharedMcpTransportConn for SseTransport {
         }
 
         lifecycle.mark_outcome_unknown(epoch_guard.epoch());
-        let resp = req.send().await.context("SSE POST to MCP server failed")?;
+        let resp = req.send().await.map_err(|error| {
+            if error.is_connect() {
+                lifecycle.mark_connect_failed();
+                return McpTransportError::TransportClosed.into();
+            }
+            anyhow::Error::new(error).context("SSE POST to MCP server failed")
+        })?;
         let status = resp.status();
         let mut got_direct = None;
 
