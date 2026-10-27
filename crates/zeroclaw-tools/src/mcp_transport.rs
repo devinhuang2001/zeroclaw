@@ -3093,9 +3093,8 @@ mod tests {
             .await
             .expect_err("HTTPS-to-HTTP redirect must be rejected");
         assert!(
-            error
-                .to_string()
-                .contains("HTTP request to MCP server failed")
+            error.to_string().contains("HTTP 302"),
+            "the original redirect must be rejected without resending: {error}"
         );
         server.task.await.unwrap();
         assert!(
