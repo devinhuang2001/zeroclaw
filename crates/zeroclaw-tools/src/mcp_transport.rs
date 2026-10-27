@@ -311,6 +311,16 @@ impl McpRequestLifecycle {
         self.phase.store(REQUEST_OUTCOME_UNKNOWN, Ordering::Release);
     }
 
+    #[cfg(test)]
+    fn test_restore_pre_write_after_connect_failure() {
+        let lifecycle = McpRequestLifecycle::uncoordinated(7);
+        lifecycle.mark_outcome_unknown(7);
+        assert_eq!(lifecycle.outcome_unknown_epoch(), Some(7));
+        lifecycle.mark_connect_failed();
+        assert_eq!(lifecycle.outcome_unknown_epoch(), None);
+        assert_eq!(lifecycle.pre_write_epoch(), Some(7));
+    }
+
     /// A connect-stage error proves the server did not receive the request.
     /// Restore the pre-write classification so the client can safely retry.
     fn mark_connect_failed(&self) {
