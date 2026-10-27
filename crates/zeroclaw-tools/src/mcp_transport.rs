@@ -169,24 +169,14 @@ fn load_tls_ca_pem(config: &McpServerConfig, path: &str) -> Result<Vec<u8>> {
 /// The optional server-specific CA is additive: system/default roots remain
 /// enabled, and normal chain and hostname verification stay in force.
 fn build_remote_http_client(config: &McpServerConfig) -> Result<reqwest::Client> {
-    let mut builder = reqwest::Client::builder();
+    // A remote MCP POST may execute a side effect before a 307/308 redirect.
+    // If following that redirect then fails to connect, reqwest reports a
+    // connect error even though the first server already received the POST.
+    // Do not automatically follow redirects for MCP transports: the original
+    // response is handled as an HTTP status, never by replaying the body.
+    let mut builder = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none());
 
     if let Some(path) = config.tls_ca_cert_path.as_deref() {
-        let server_name = config.name.clone();
-        builder = builder.redirect(reqwest::redirect::Policy::custom(move |attempt| {
-            if attempt.previous().len() >= 10 {
-                attempt.error(std::io::Error::other(format!(
-                    "MCP server `{server_name}`: too many redirects"
-                )))
-            } else if attempt.url().scheme() == "https" {
-                attempt.follow()
-            } else {
-                attempt.error(std::io::Error::other(format!(
-                    "MCP server `{server_name}`: tls_ca_cert_path forbids redirecting to plaintext"
-                )))
-            }
-        }));
-
         if !std::path::Path::new(path).is_absolute() {
             bail!(
                 "MCP server `{}`: TLS CA certificate path must be absolute: `{}`",
@@ -1263,7 +1253,8 @@ impl SharedMcpTransportConn for HttpTransport {
         let resp = req.send().await.map_err(|error| {
             if error.is_connect() {
                 lifecycle.mark_connect_failed();
-                return McpTransportError::TransportClosed.into();
+                return anyhow::Error::new(McpTransportError::TransportClosed)
+                    .context("HTTP request to MCP server failed");
             }
             anyhow::Error::new(error).context("HTTP request to MCP server failed")
         })?;
@@ -2040,7 +2031,8 @@ impl SharedMcpTransportConn for SseTransport {
         let resp = req.send().await.map_err(|error| {
             if error.is_connect() {
                 lifecycle.mark_connect_failed();
-                return McpTransportError::TransportClosed.into();
+                return anyhow::Error::new(McpTransportError::TransportClosed)
+                    .context("SSE POST to MCP server failed");
             }
             anyhow::Error::new(error).context("SSE POST to MCP server failed")
         })?;
@@ -2949,6 +2941,39 @@ mod tests {
         let error = load_tls_ca_pem(&config_for(&fifo_link), &fifo_link.to_string_lossy())
             .expect_err("a symlink to a FIFO must be rejected");
         assert!(error.to_string().contains("must name a regular file"));
+    }
+
+    #[tokio::test]
+    async fn http_post_redirect_is_not_followed_or_replayed() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(307)
+                    .insert_header("Location", "http://127.0.0.1:1/replay"),
+            )
+            .mount(&server)
+            .await;
+
+        let config = McpServerConfig {
+            name: "no-replay".into(),
+            transport: McpTransport::Http,
+            url: Some(server.uri()),
+            ..Default::default()
+        };
+        let transport = HttpTransport::new(&config).unwrap();
+        let request = JsonRpcRequest::new(1, "tools/call", serde_json::json!({}));
+        let lifecycle = McpRequestLifecycle::uncoordinated(0);
+        let error = SharedMcpTransportConn::send_and_recv(&transport, &request, &lifecycle)
+            .await
+            .expect_err("redirected tool POST must not be automatically resent");
+
+        assert!(error.to_string().contains("HTTP 307"), "{error}");
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
+        assert!(lifecycle.outcome_unknown_epoch().is_none());
+        assert!(lifecycle.pre_write_epoch().is_none());
     }
 
     #[tokio::test]
