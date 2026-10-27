@@ -2951,8 +2951,7 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .respond_with(
-                ResponseTemplate::new(307)
-                    .insert_header("Location", "http://127.0.0.1:1/replay"),
+                ResponseTemplate::new(307).insert_header("Location", "http://127.0.0.1:1/replay"),
             )
             .mount(&server)
             .await;
